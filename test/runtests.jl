@@ -6,6 +6,23 @@ rm("image.png", force=true)
 rm("tmp", force=true, recursive=true)
 
 @testset "RemoteFiles" begin
+    @testset "Backends" begin
+        if RemoteFiles.CURL() in RemoteFiles.BACKENDS
+            download(RemoteFiles.CURL(), "https://httpbin.org/image/png", "image.png")
+            @test isfile("image.png")
+            rm("image.png", force=true)
+        end
+
+        if RemoteFiles.Wget() in RemoteFiles.BACKENDS
+            download(RemoteFiles.Wget(), "https://httpbin.org/image/png", "image.png")
+            @test isfile("image.png")
+            rm("image.png", force=true)
+        end
+
+        download(RemoteFiles.Http(), "https://httpbin.org/image/png", "image.png")
+        @test isfile("image.png")
+        rm("image.png", force=true)
+    end
     @testset "RemoteFile" begin
         r = RemoteFile("https://httpbin.org/image/png")
         @test r.file == "png"
@@ -27,10 +44,14 @@ rm("tmp", force=true, recursive=true)
         @test_throws ArgumentError RemoteFile("garbage")
 
         r = RemoteFile("https://garbage/garbage/garbage.garbage", wait=0, retries=0)
-        @test_throws ErrorException download(r)
+        @test_throws DownloadError download(r)
 
+        r = RemoteFile("https://garbage/garbage/garbage.garbage", wait=0, retries=1, try_backends=false)
+        @test_throws DownloadError download(r)
+
+        # Fail early for unexpected errors
         r = RemoteFile("https://garbage/garbage/garbage.garbage", wait=0, retries=0, failed=:warn)
-        @test_throws ErrorException download(r)
+        @test_throws DownloadError download(r)
 
         r = RemoteFile("https://httpbin.org/image/png", file="image.png", updates=:never)
         download(r)
@@ -72,7 +93,6 @@ rm("tmp", force=true, recursive=true)
         @test isfile(r1)
         rm(dir, force=true, recursive=true)
     end
-
     @testset "RemoteFileSets" begin
         set = RemoteFileSet("Images",
             file1=RemoteFile("https://httpbin.org/image/png", file="image1.png"),
@@ -107,7 +127,6 @@ rm("tmp", force=true, recursive=true)
         @test isdir(dir)
         rm(dir, force=true, recursive=true)
     end
-
     @testset "Updates" begin
         @test RemoteFiles.samecontent(@__FILE__, @__FILE__) == true
 

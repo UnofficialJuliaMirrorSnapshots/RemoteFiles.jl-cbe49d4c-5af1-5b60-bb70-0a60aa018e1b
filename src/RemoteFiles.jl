@@ -6,8 +6,29 @@ using HTTP: URI
 
 import Base: rm, isfile, getindex, download, rm
 
-export RemoteFile, @RemoteFile, path, rm, isfile, RemoteFileSet, @RemoteFileSet,
-    files, paths, download
+export DownloadError, RemoteFile, @RemoteFile, path, rm, isfile,
+    RemoteFileSet, @RemoteFileSet, files, paths, download, load
+
+include("backends.jl")
+
+const BACKENDS = AbstractBackend[Http()]
+
+function __init__()
+    Sys.which("wget") !== nothing && pushfirst!(BACKENDS, Wget())
+    # Windows ships a proper cURL starting with 10.0.1803.
+    # Before that, there is an awful Powershell alias which we want to avoid.
+    if Sys.isunix() || (Sys.iswindows() &&
+                        Int(Sys.windows_version().major) >= 10 &&
+                        Int(Sys.windows_version().patch) >= 1803)
+        Sys.which("curl") !== nothing && pushfirst!(BACKENDS, CURL())
+    end
+end
+
+struct DownloadError <: Exception
+    msg::String
+end
+
+Base.show(io::IO, ex::DownloadError) = print(io, ex.msg)
 
 struct RemoteFile
     uri::URI
@@ -15,8 +36,16 @@ struct RemoteFile
     dir::String
     updates::Symbol
     retries::Int
+    try_backends::Bool
     wait::Int
     failed::Symbol
+end
+
+function getdir(src)
+    file = string(src.file)
+    file = startswith(file, "REPL") ? "." : file
+    file = abspath(dirname(file), "..", "data")
+    :($file)
 end
 
 function RemoteFile(uri::URI;
@@ -24,6 +53,7 @@ function RemoteFile(uri::URI;
     dir::String=".",
     updates::Symbol=:never,
     retries::Int=3,
+    try_backends::Bool=true,
     wait::Int=5,
     failed::Symbol=:error,
 )
@@ -37,15 +67,14 @@ function RemoteFile(uri::URI;
         end
     end
 
-    RemoteFile(uri, file, abspath(dir), updates, retries, wait, failed)
+    RemoteFile(uri, file, abspath(dir), updates, retries, try_backends, wait, failed)
 end
 RemoteFile(uri::String; kwargs...) = RemoteFile(URI(uri); kwargs...)
 
 filename(uri::URI) = split(split(uri.path, ';')[1], '/')[end]
 
 macro RemoteFile(uri, args...)
-    dir = :(abspath(isa(@__FILE__, Nothing) ? "." :
-        dirname(@__FILE__), "..", "data"))
+    dir = getdir(__source__)
     kw = Expr[]
     found_dir = false
     for arg in args
@@ -80,13 +109,13 @@ The following keyword arguments are available:
     - `:yearly`
     - `:mondays`/`:weekly`, `:tuesdays`, etc.
 - `retries` (default: 3): How many retries should be attempted.
+- `try_backends` (default: `true`): Whether to retry with different backends.
 - `wait` (default: 5): How many seconds to wait between retries.
 - `failed` (default: `:error`): What to do if the download fails. Either throw
     an exception (`:error`) or display a warning (`:warn`).
 """
 macro RemoteFile(name::Symbol, uri, args...)
-    dir = :(abspath(isa(@__FILE__, Nothing) ? "." :
-        dirname(@__FILE__), "..", "data"))
+    dir = getdir(__source__)
     kw = Expr[]
     found_dir = false
     for arg in args
@@ -242,6 +271,23 @@ function download(rfs::RemoteFileSet; quiet::Bool=false, verbose::Bool=false, fo
     @sync for file in values(rfs.files)
         @async download(file, quiet=verbose, verbose=verbose, force=force)
     end
+end
+
+import FileIO: load
+
+"""
+    load(rf::RemoteFile)
+
+Load the contents of a remote file, downloading the file if
+it has not been done previously, reading the file from disk
+and trying to infer the format from filename and/or magic
+bytes in the file via [FileIO.jl](https://github.com/JuliaIO/FileIO.jl).
+"""
+function load(rf::RemoteFile)
+    if !isfile(rf)
+        download(rf)
+    end
+    load(path(rf))
 end
 
 end # module
